@@ -15,9 +15,16 @@ requires = ["uv_build>=0.8.13,<0.9.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = [
-    "httpx>=0.28.1",
-    "pytest>=8.4.1",
-    "ruff>=0.12.10",
-]
+dev = ["httpx>=0.28.1", "pytest>=8.4.1", "ruff>=0.12.10"]
 [tool.pytest.ini_options]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"] # errors, flake8 rules, import sorting, pyupgrade
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
