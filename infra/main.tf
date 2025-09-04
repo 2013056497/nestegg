@@ -92,6 +92,11 @@ resource "aws_iam_role" "gha_deploy" {
   tags               = local.tags
 }
 
+resource "aws_iam_role_policy_attachment" "gha_attach" {
+  role       = aws_iam_role.gha_deploy.name
+  policy_arn = aws_iam_policy.gha_policy.arn
+}
+
 # Least-privilege ECR + identity actions for CI
 
 data "aws_iam_policy_document" "gha_policy" {
