@@ -1,0 +1,70 @@
+name: Build & Push to ECR   # Workflow name, shows in Actions tab
+
+on:
+  push:                     # Triggers on push to main branch
+    branches: [ main ]
+    paths:                  # Only run if these paths change
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/build-and-push.yml"
+  workflow_dispatch:         # Allows manual run from GitHub UI
+
+permissions:
+  id-token: write            # Needed for OIDC
+  contents: read             # Needed to checkout repo
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_BACKEND: ${{ vars.ECR_BACKEND }}
+  ECR_FRONTEND: ${{ vars.ECR_FRONTEND }}
+  DEPLOY_ROLE_ARN: ${{ vars.DEPLOY_ROLE_ARN }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    # Run the job twice (one for backend, one for frontend)
+    strategy:
+      matrix:
+        service:
+          - name: backend
+            path: backend
+            repo: ${{ vars.ECR_BACKEND }}
+          - name: frontend
+            path: frontend
+            repo: ${{ vars.ECR_FRONTEND }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        if: hashFiles(format('{0}/Dockerfile', matrix.service.path)) != ''
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ matrix.service.repo }}"
+          SHA_TAG="${GITHUB_SHA::12}"                # short commit hash
+          BRANCH_TAG="${GITHUB_REF_NAME//\//-}"      # branch name (slashes replaced)
+
+          echo "Building $IMAGE with tags: latest, $SHA_TAG, $BRANCH_TAG"
+
+          docker build \
+            --pull \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:$SHA_TAG" \
+            -t "$IMAGE:$BRANCH_TAG" \
+            "${{ matrix.service.path }}"
+
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:$SHA_TAG"
+          docker push "$IMAGE:$BRANCH_TAG"
