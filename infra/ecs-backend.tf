@@ -30,14 +30,26 @@ resource "aws_ecs_task_definition" "backend" {
 
   container_definitions = jsonencode([{
     name = "api",
-    # Placeholder; Phase 3 deploy workflow will replace with your ECR digest
-    image        = "public.ecr.aws/docker/library/python:3.12-alpine",
+    # This placeholder will be overwritten by deploy-ecs.yml with a digest
+    image        = "${local.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${local.name}-backend:latest",
     essential    = true,
-    command      = ["python", "-m", "http.server", "8000"],
     portMappings = [{ containerPort = 8000, protocol = "tcp" }],
-    logConfiguration = { logDriver = "awslogs", options = {
-      awslogs-group = aws_cloudwatch_log_group.api.name,
-    awslogs-region = var.aws_region, awslogs-stream-prefix = "api" } }
+    logConfiguration = {
+      logDriver = "awslogs",
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.api.name,
+        awslogs-region        = var.aws_region,
+        awslogs-stream-prefix = "api"
+      }
+    },
+    # Add a container health check for your FastAPI /healthz route
+    healthCheck = {
+      command     = ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 10
+    }
   }])
 
   tags = local.tags
