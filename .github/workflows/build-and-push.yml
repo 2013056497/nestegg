@@ -53,13 +53,13 @@ jobs:
         if: hashFiles(format('{0}/Dockerfile', matrix.service.path)) != ''
         run: |
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ matrix.service.repo }}"
-          SHA_TAG="${GITHUB_SHA::12}"                # short commit hash
-          BRANCH_TAG="${GITHUB_REF_NAME//\//-}"      # branch name (slashes replaced)
+          SHA_SHORT="${GITHUB_SHA::12}"
+          SHA_TAG="sha-${SHA_SHORT}"                # <-- add prefix
+          BRANCH_TAG="${GITHUB_REF_NAME//\//-}"
 
           echo "Building $IMAGE with tags: latest, $SHA_TAG, $BRANCH_TAG"
 
-          docker build \
-            --pull \
+          docker build --pull \
             -t "$IMAGE:latest" \
             -t "$IMAGE:$SHA_TAG" \
             -t "$IMAGE:$BRANCH_TAG" \
@@ -68,3 +68,11 @@ jobs:
           docker push "$IMAGE:latest"
           docker push "$IMAGE:$SHA_TAG"
           docker push "$IMAGE:$BRANCH_TAG"
+
+          # Print digest for the sha tag (handy for deploy)
+          DIGEST=$(aws ecr batch-get-image \
+            --repository-name "${{ matrix.service.repo }}" \
+            --image-ids imageTag="$SHA_TAG" \
+            --query 'images[0].imageId.imageDigest' --output text)
+          echo "Pushed image: $IMAGE@$DIGEST"
+
