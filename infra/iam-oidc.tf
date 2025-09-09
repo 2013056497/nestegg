@@ -65,6 +65,20 @@ data "aws_iam_policy_document" "gha_policy" {
   }
 
   statement {
+    sid     = "PassRolesForTaskDef"
+    actions = ["iam:PassRole"]
+    resources = [
+      aws_iam_role.exec.arn,
+      aws_iam_role.task.arn
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+
+  statement {
     sid       = "StsWhoAmI"
     actions   = ["sts:GetCallerIdentity"]
     resources = ["*"]
@@ -79,9 +93,4 @@ resource "aws_iam_policy" "gha_policy" {
 resource "aws_iam_role_policy_attachment" "gha_attach" {
   role       = aws_iam_role.gha_deploy.name
   policy_arn = aws_iam_policy.gha_policy.arn
-}
-
-# Optional: output so you can set DEPLOY_ROLE_ARN easily
-output "deploy_role_arn" {
-  value = aws_iam_role.gha_deploy.arn
 }
