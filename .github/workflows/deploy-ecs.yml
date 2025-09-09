@@ -1,0 +1,122 @@
+name: Deploy to ECS
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: Which app to deploy
+        type: choice
+        options: [backend, frontend]
+        required: true
+      commit_sha:
+        description: Full commit SHA (optional; uses branch if empty)
+        required: false
+      branch:
+        description: Branch tag to deploy if SHA not given
+        default: main
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  DEPLOY_ROLE_ARN: ${{ vars.DEPLOY_ROLE_ARN }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE_BACKEND: ${{ vars.ECS_SERVICE_BACKEND }}
+  ECS_SERVICE_FRONTEND: ${{ vars.ECS_SERVICE_FRONTEND }}
+  ECS_TASK_FAMILY_BACKEND: ${{ vars.ECS_TASK_FAMILY_BACKEND }}
+  ECS_TASK_FAMILY_FRONTEND: ${{ vars.ECS_TASK_FAMILY_FRONTEND }}
+  ECR_BACKEND: ${{ vars.ECR_BACKEND }}
+  ECR_FRONTEND: ${{ vars.ECR_FRONTEND }}
+  ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Select app targets
+        id: sel
+        run: |
+          if [ "${{ inputs.app }}" = "backend" ]; then
+            echo "repo=${ECR_BACKEND}" >> $GITHUB_OUTPUT
+            echo "family=${ECS_TASK_FAMILY_BACKEND}" >> $GITHUB_OUTPUT
+            echo "service=${ECS_SERVICE_BACKEND}" >> $GITHUB_OUTPUT
+          else
+            echo "repo=${ECR_FRONTEND}" >> $GITHUB_OUTPUT
+            echo "family=${ECS_TASK_FAMILY_FRONTEND}" >> $GITHUB_OUTPUT
+            echo "service=${ECS_SERVICE_FRONTEND}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Resolve image tag → digest
+        id: dig
+        run: |
+          if [ -n "${{ inputs.commit_sha }}" ]; then
+            TAG="sha-${{ inputs.commit_sha }}"
+          else
+            TAG="${{ inputs.branch }}"
+          fi
+          echo "Using tag: $TAG"
+
+          # Get digest from ECR for that tag
+          DIGEST=$(aws ecr batch-get-image \
+            --repository-name "${{ steps.sel.outputs.repo }}" \
+            --image-ids imageTag="$TAG" \
+            --query 'images[0].imageId.imageDigest' \
+            --output text)
+
+          if [ "$DIGEST" = "None" ] || [ -z "$DIGEST" ]; then
+            echo "Tag not found in ECR: $TAG" >&2
+            exit 1
+          fi
+
+          IMAGE="${{ env.ECR_REGISTRY }}/${{ steps.sel.outputs.repo }}@${DIGEST}"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "tag=$TAG"     >> $GITHUB_OUTPUT
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Create new task definition revision (pin by digest)
+        id: taskdef
+        run: |
+          FAMILY="${{ steps.sel.outputs.family }}"
+          CURR=$(aws ecs describe-task-definition --task-definition "$FAMILY")
+          NEW=$(echo "$CURR" \
+            | jq --arg IMG "${{ steps.dig.outputs.image }}" '
+                .taskDefinition
+                | del(.status,.revision,.taskDefinitionArn,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)
+                | .containerDefinitions[0].image = $IMG
+              ')
+          REG=$(aws ecs register-task-definition --cli-input-json "$NEW")
+          ARN=$(echo "$REG" | jq -r '.taskDefinition.taskDefinitionArn')
+          echo "arn=$ARN" >> $GITHUB_OUTPUT
+
+      - name: Update ECS service (roll out)
+        run: |
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ steps.sel.outputs.service }}" \
+            --task-definition "${{ steps.taskdef.outputs.arn }}" \
+            --force-new-deployment
+
+      - name: Wait for stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ steps.sel.outputs.service }}"
+
+      - name: Summary
+        run: |
+          echo "Deployed ${{ inputs.app }} tag '${{ steps.dig.outputs.tag }}' as image:"
+          echo "${{ steps.dig.outputs.image }}"
